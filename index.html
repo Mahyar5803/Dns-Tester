@@ -1,0 +1,226 @@
+/*
+DNS Tester — single-file React component
+Use: This is a ready React component (default export). You can preview it in the canvas and also copy it into a small project.
+
+Quick publish to GitHub Pages (recommended simple way):
+1. Create a new GitHub repo (e.g. dns-tester).
+2. Create a file `index.html` and paste the small wrapper HTML (instructions below) that mounts this component using unpkg React + Babel.
+3. Commit & push. In repo Settings -> Pages -> choose branch `main` / `/ (root)` and save. After a minute your site will be live at https://<your-username>.github.io/<repo-name>/
+
+Notes & limitations:
+- Browsers cannot perform raw UDP DNS queries. This tester uses DNS-over-HTTPS (DoH / JSON) endpoints (Cloudflare, Google, custom DoH). These are the most reliable way to test reachability from the browser.
+- If a DoH endpoint does not support CORS, the browser will block the request — the tester will show as "blocked / CORS".
+- You can add/remove DoH endpoints and test many domains.
+
+If you want, I can also split this into separate index.html / script.js / style.css files ready to paste into GitHub.
+*/
+
+import React, { useEffect, useMemo, useState, useRef } from 'react'
+
+export default function App(){
+  const defaultChecks = useMemo(()=>[
+    {id: 'cloudflare', name: 'Cloudflare (1.1.1.1)', url: 'https://cloudflare-dns.com/dns-query?name=example.com&type=A', doh: true},
+    {id: 'google', name: 'Google DNS (dns.google)', url: 'https://dns.google/resolve?name=example.com', doh: true},
+    {id: 'quad9', name: 'Quad9 (9.9.9.9)', url: 'https://dns.quad9.net/dns-query?name=example.com&type=A', doh: true},
+  ],[])
+
+  const [endpoints, setEndpoints] = useState(()=>defaultChecks)
+  const [domain, setDomain] = useState('example.com')
+  const [results, setResults] = useState({})
+  const [running, setRunning] = useState(false)
+  const [themeDark, setThemeDark] = useState(true)
+  const [timeoutMs, setTimeoutMs] = useState(4000)
+  const controllerRef = useRef(null)
+
+  useEffect(()=>{
+    document.documentElement.classList.toggle('dark', themeDark)
+  },[themeDark])
+
+  function addEndpoint(){
+    const id = 'custom-' + Math.random().toString(36).slice(2,8)
+    setEndpoints(prev=>[{id,name:'Custom DoH',url:'https://',doh:true},...prev])
+  }
+
+  function updateEndpoint(id, patch){
+    setEndpoints(prev=>prev.map(e=> e.id===id? {...e,...patch}: e))
+  }
+
+  function removeEndpoint(id){
+    setEndpoints(prev=>prev.filter(e=>e.id!==id))
+  }
+
+  async function testOnce(){
+    if(running){
+      if(controllerRef.current) controllerRef.current.abort()
+      setRunning(false)
+      return
+    }
+    setResults({})
+    setRunning(true)
+    controllerRef.current = new AbortController()
+    const signal = controllerRef.current.signal
+
+    const tasks = endpoints.map(ep => (async()=>{
+      const url = ep.url.replace(/example\.com/g, encodeURIComponent(domain))
+      const headers = { 'accept': 'application/dns-json' }
+      const start = performance.now()
+      let status = { ok:false, latency:null, error:null, raw:null }
+      try{
+        const controller = new AbortController()
+        const timeout = setTimeout(()=>controller.abort(), timeoutMs)
+        const res = await fetch(url, { method: 'GET', headers, signal: controller.signal })
+        clearTimeout(timeout)
+        const took = Math.round(performance.now() - start)
+        status.latency = took
+        status.raw = await res.text()
+        if(res.ok){
+          status.ok = true
+        } else {
+          status.error = `HTTP ${res.status}`
+        }
+      }catch(err){
+        if(err.name === 'AbortError') status.error = 'timeout / aborted'
+        else status.error = err.message
+      }
+      setResults(prev => ({...prev, [ep.id]: status}))
+    })())
+
+    await Promise.all(tasks)
+    setRunning(false)
+  }
+
+  function pretty(result){
+    if(!result) return {label: 'unknown', cls: 'bg-gray-300 text-gray-800'}
+    if(result.ok) return {label: `online · ${result.latency} ms`, cls: 'bg-emerald-500 text-white'}
+    return {label: `offline · ${result.error}`, cls: 'bg-rose-500 text-white'}
+  }
+
+  function exportCSV(){
+    const rows = [['endpoint','url','status','latency','error']]
+    for(const ep of endpoints){
+      const r = results[ep.id] || {}
+      rows.push([ep.name, ep.url, r.ok ? 'online' : 'offline', r.latency ?? '', r.error ?? ''])
+    }
+    const csv = rows.map(r => r.map(c => '"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n')
+    const blob = new Blob([csv], {type:'text/csv'})
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = 'dns-tester-results.csv'; a.click(); URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 dark:from-slate-800 dark:to-slate-900 text-slate-100 p-6">
+      <div className="max-w-5xl mx-auto">
+        <header className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-3xl font-extrabold">DNS Tester</h1>
+            <p className="text-slate-400 mt-1">تست آنلاین دسترسی DoH (DNS over HTTPS) — قابل استفاده روی GitHub Pages</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={()=>setThemeDark(d=>!d)} className="px-3 py-2 rounded-2xl bg-white/5 hover:bg-white/10">{themeDark? 'تم تاریک' : 'تم روشن'}</button>
+            <button onClick={()=>{navigator.clipboard?.writeText(location.href)}} className="px-3 py-2 rounded-2xl bg-white/5">کپی لینک</button>
+          </div>
+        </header>
+
+        <main className="bg-white/5 rounded-2xl p-6 shadow-lg">
+          <div className="grid md:grid-cols-3 gap-4 items-end">
+            <div className="md:col-span-2">
+              <label className="block text-sm text-slate-300">دامنه برای تست</label>
+              <input value={domain} onChange={e=>setDomain(e.target.value)} className="mt-1 w-full px-3 py-2 rounded-lg bg-white/5" />
+            </div>
+            <div className="flex gap-2">
+              <label className="block text-sm text-slate-300">Timeout (ms)</label>
+              <input type="number" value={timeoutMs} onChange={e=>setTimeoutMs(Number(e.target.value||0))} className="mt-1 w-full px-3 py-2 rounded-lg bg-white/5" />
+            </div>
+          </div>
+
+          <section className="mt-6">
+            <div className="flex justify-between items-center">
+              <h2 className="text-xl font-semibold">Endpoints (DoH)</h2>
+              <div className="flex gap-2">
+                <button onClick={addEndpoint} className="px-3 py-2 bg-emerald-500 rounded-lg">افزودن</button>
+                <button onClick={testOnce} className={`px-4 py-2 rounded-lg ${running? 'bg-rose-500' : 'bg-sky-500'}`}>{running? 'توقف' : 'تست کن'}</button>
+                <button onClick={exportCSV} className="px-3 py-2 bg-white/5 rounded-lg">خروجی CSV</button>
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {endpoints.map(ep=>{
+                const r = results[ep.id]
+                const p = pretty(r)
+                return (
+                  <div key={ep.id} className="flex items-center gap-3 bg-white/3 p-3 rounded-lg">
+                    <div className="w-10 h-10 flex items-center justify-center rounded-lg bg-white/6">DNS</div>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 justify-between">
+                        <div>
+                          <input className="bg-transparent text-lg" value={ep.name} onChange={e=>updateEndpoint(ep.id,{name:e.target.value})} />
+                          <div className="text-sm text-slate-400 mt-1">{ep.url}</div>
+                        </div>
+                        <div className="flex gap-2 items-center">
+                          <div className={`px-3 py-1 rounded-full ${p.cls}`}>{p.label}</div>
+                          <button onClick={()=>{navigator.clipboard?.writeText(ep.url)}} className="px-2 py-1 bg-white/5 rounded">کپی</button>
+                          <button onClick={()=>removeEndpoint(ep.id)} className="px-2 py-1 bg-white/5 rounded">حذف</button>
+                        </div>
+                      </div>
+                      <input className="mt-2 w-full px-3 py-2 rounded-lg bg-white/5" value={ep.url} onChange={e=>updateEndpoint(ep.id,{url:e.target.value})} />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="mt-6">
+              <h3 className="font-semibold">خلاصه</h3>
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                {endpoints.map(ep=>{
+                  const r = results[ep.id]
+                  return (
+                    <div key={ep.id} className="p-3 rounded-lg bg-white/6">
+                      <div className="flex items-center justify-between">
+                        <div className="font-medium">{ep.name}</div>
+                        <div className="text-sm text-slate-300">{r?.latency ? r.latency + ' ms' : (r?.error ? '—' : '—')}</div>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-300">{r?.ok ? 'پاسخ دریافت شد' : (r?.error ?? 'تست نشده')}</div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+          </section>
+
+          <footer className="mt-6 text-slate-400 text-sm">
+            <p>این ابزار از DoH استفاده می‌کند؛ برای تست DNSهای سنتی (UDP) باید از ابزار سرور یا کلاینت خارج از مرورگر استفاده کنید.</p>
+          </footer>
+        </main>
+      </div>
+    </div>
+  )
+}
+
+/*
+----- Quick wrapper HTML (paste into index.html) -----
+
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>DNS Tester</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>tailwind.config = { darkMode: 'class' }</script>
+  </head>
+  <body class="antialiased">
+    <div id="root"></div>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    <script type="text/babel">
+      // Paste the component code here and render it
+      // e.g. const App = /* component code */
+      // ReactDOM.createRoot(document.getElementById('root')).render(<App />)
+    </script>
+  </body>
+</html>
+
+*/
